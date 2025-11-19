@@ -14,5 +14,12 @@
 			"!**/node_modules/*",
 			"!**/.wrangler/*"
 		]
+	},
+	"linter": {
+		"rules": {
+			"suspicious": {
+				"noExplicitAny": "off"
+			}
+		}
 	}
 }
