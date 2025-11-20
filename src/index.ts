@@ -17,6 +17,7 @@ import {
 
 export class Resonate {
 	private registry = new Registry();
+	private dependencies = new Map<string, any>();
 	private verbose: boolean;
 	private encryptor: Encryptor;
 
@@ -58,6 +59,10 @@ export class Resonate {
 		const name = typeof nameOrFunc === "string" ? nameOrFunc : func.name;
 
 		this.registry.add(func, name, version);
+	}
+
+	public setDependency(name: string, obj: any): void {
+		this.dependencies.set(name, obj);
 	}
 
 	public handlerHttp(): {
@@ -126,7 +131,7 @@ export class Resonate {
 						anycastNoPreference: url,
 						anycastPreference: url,
 						clock: new WallClock(),
-						dependencies: new Map(),
+						dependencies: this.dependencies,
 						handler: new Handler(network, encoder, this.encryptor),
 						heartbeat: new NoopHeartbeat(),
 						network,

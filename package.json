@@ -1,6 +1,6 @@
 {
   "name": "@resonatehq/cloudflare",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Resonate FaaS handler for Cloudflare Workers (TypeScript)",
   "repository": {
     "url": "https://github.com/resonatehq/resonate-faas-cloudflare-ts"
