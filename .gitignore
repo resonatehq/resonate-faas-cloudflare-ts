@@ -141,3 +141,5 @@ vite.config.ts.timestamp-*
 
 *.lock
 *.wrangler
+
+.DS_Store
