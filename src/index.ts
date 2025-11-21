@@ -21,6 +21,8 @@ export class Resonate {
 	private verbose: boolean;
 	private encryptor: Encryptor;
 
+	private initializer?: (env: Record<string, string>) => Promise<void>;
+
 	constructor({
 		verbose = false,
 		encryptor = undefined,
@@ -61,6 +63,12 @@ export class Resonate {
 		this.registry.add(func, name, version);
 	}
 
+	public onInitialize(
+		fn: (env: Record<string, string>) => Promise<void>,
+	): void {
+		this.initializer = fn;
+	}
+
 	public setDependency(name: string, obj: any): void {
 		this.dependencies.set(name, obj);
 	}
@@ -75,9 +83,13 @@ export class Resonate {
 		return {
 			fetch: async (
 				request: Request,
-				_env: Record<string, string>,
+				env: Record<string, string>,
 				_ctx: ExecutionContext,
 			): Promise<Response> => {
+				if (this.initializer !== undefined) {
+					await this.initializer(env);
+				}
+
 				try {
 					if (request.method !== "POST") {
 						return new Response(
