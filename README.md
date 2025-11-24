@@ -28,8 +28,11 @@ Illustration of executing `factorial(2)` on Cloudflare Workers:
 
 ## Quick Start
 
-### 1. Install
-
 ```bash
 npm install @resonatehq/cloudflare
 ```
+
+See [Cloudflare Workers documentation](https://developers.cloudflare.com/workers/) to learn how to develop and deploy Cloudflare Workers and see Resonate's Cloudflare Workers examples for a step by step tutorial:
+
+- [Durable Countdown](https://github.com/resonatehq-examples/example-countdown-cloudflare-ts)
+- [Durable, Recursive Research Agent](https://github.com/resonatehq-examples/example-openai-deep-research-agent-cloudflare-ts)
