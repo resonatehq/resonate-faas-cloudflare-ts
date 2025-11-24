@@ -17,8 +17,11 @@ import {
 
 export class Resonate {
 	private registry = new Registry();
+	private dependencies = new Map<string, any>();
 	private verbose: boolean;
 	private encryptor: Encryptor;
+
+	private initializer?: (env: Record<string, string>) => Promise<void>;
 
 	constructor({
 		verbose = false,
@@ -60,6 +63,16 @@ export class Resonate {
 		this.registry.add(func, name, version);
 	}
 
+	public onInitialize(
+		fn: (env: Record<string, string>) => Promise<void>,
+	): void {
+		this.initializer = fn;
+	}
+
+	public setDependency(name: string, obj: any): void {
+		this.dependencies.set(name, obj);
+	}
+
 	public handlerHttp(): {
 		fetch: (
 			request: Request,
@@ -70,9 +83,13 @@ export class Resonate {
 		return {
 			fetch: async (
 				request: Request,
-				_env: Record<string, string>,
+				env: Record<string, string>,
 				_ctx: ExecutionContext,
 			): Promise<Response> => {
+				if (this.initializer !== undefined) {
+					await this.initializer(env);
+				}
+
 				try {
 					if (request.method !== "POST") {
 						return new Response(
@@ -126,7 +143,7 @@ export class Resonate {
 						anycastNoPreference: url,
 						anycastPreference: url,
 						clock: new WallClock(),
-						dependencies: new Map(),
+						dependencies: this.dependencies,
 						handler: new Handler(network, encoder, this.encryptor),
 						heartbeat: new NoopHeartbeat(),
 						network,
