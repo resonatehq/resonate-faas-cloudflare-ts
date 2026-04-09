@@ -221,15 +221,13 @@ export class Resonate {
 					const status = await core.onMessage(body);
 
 					if (status.kind === "done") {
-						return new Response(
-							JSON.stringify({ status: "completed" }),
-							{ status: 200 },
-						);
+						return new Response(JSON.stringify({ status: "completed" }), {
+							status: 200,
+						});
 					}
-					return new Response(
-						JSON.stringify({ status: "suspended" }),
-						{ status: 200 },
-					);
+					return new Response(JSON.stringify({ status: "suspended" }), {
+						status: 200,
+					});
 				} catch (error) {
 					return new Response(
 						JSON.stringify({ error: `Handler failed: ${error}` }),
