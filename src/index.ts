@@ -30,7 +30,7 @@ export class Resonate {
 	private codec: Codec;
 	private idPrefix: string;
 	private logger: Logger;
-	private pid: string;
+	private pid: string | undefined;
 	private dependencies: Map<string, any>;
 	private token?: string;
 	private timeout?: number;
@@ -82,7 +82,7 @@ export class Resonate {
 		this.idPrefix = prefix ? `${prefix}:` : "";
 		const resolvedLogLevel: LogLevel = logLevel ?? (verbose ? "debug" : "warn");
 		this.logger = logger ?? new ConsoleLogger(resolvedLogLevel);
-		this.pid = pid ?? crypto.randomUUID().replace(/-/g, "");
+		this.pid = pid;
 
 		this.registry = new Registry();
 		this.dependencies = new Map();
@@ -200,7 +200,7 @@ export class Resonate {
 					const functionUrl = `${protocol}//${host}${pathname}`;
 
 					const core = new Core({
-						pid: this.pid,
+						pid: this.pid ?? crypto.randomUUID().replace(/-/g, ""),
 						ttl: this.ttl,
 						clock: new WallClock(),
 						send: network.send,
