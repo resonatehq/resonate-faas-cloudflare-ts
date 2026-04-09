@@ -1,47 +1,107 @@
 import type { ExecutionContext } from "@cloudflare/workers-types";
 import {
+	Codec,
+	ConsoleLogger,
+	Core,
+	type Encryptor,
 	type Func,
-	Handler,
 	HttpNetwork,
-	JsonEncoder,
+	isExecuteMsg,
+	type Logger,
+	type LogLevel,
+	NoopEncryptor,
 	NoopHeartbeat,
+	OptionsBuilder,
 	Registry,
-	ResonateInner,
-	type Task,
 	WallClock,
 } from "@resonatehq/sdk";
-import {
-	type Encryptor,
-	NoopEncryptor,
-} from "@resonatehq/sdk/dist/src/encryptor";
+
+function isUrl(str: string): boolean {
+	try {
+		new URL(str);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 export class Resonate {
-	private registry = new Registry();
-	private dependencies = new Map<string, any>();
-	private verbose: boolean;
-	private encryptor: Encryptor;
-
+	private registry: Registry;
+	private codec: Codec;
+	private idPrefix: string;
+	private logger: Logger;
+	private pid: string | undefined;
+	private dependencies: Map<string, any>;
+	private token?: string;
+	private timeout?: number;
+	private ttl: number;
 	private initializer?: (env: Record<string, string>) => Promise<void>;
 
+	/**
+	 * Creates a new Resonate client instance.
+	 *
+	 * @param options - Configuration options for the client.
+	 * @param options.pid - Process identifier for the client. Defaults to a random UUID.
+	 * @param options.ttl - Time-to-live (in ms) for acquired tasks. The server will release
+	 *   a task if no heartbeat is received within this window. Defaults to `5 * 60 * 1000`
+	 *   (5 minutes). Set this to at least the maximum expected function execution time.
+	 *   Because serverless functions cannot send async heartbeats, choose a value safely
+	 *   above your function's configured timeout.
+	 * @param options.token - Bearer token for authentication. Passed through to HttpNetwork
+	 *   which falls back to `RESONATE_TOKEN` env var.
+	 * @param options.timeout - Network request timeout. Passed through to HttpNetwork
+	 *   which falls back to `RESONATE_TIMEOUT` env var (default: 10s).
+	 * @param options.verbose - Enables verbose logging (shorthand for `logLevel: "debug"`). Defaults to `false`.
+	 * @param options.logLevel - Log level for the default ConsoleLogger. Defaults to `"warn"`. Takes precedence over `verbose`.
+	 * @param options.logger - Custom logger implementation. Defaults to {@link ConsoleLogger}.
+	 * @param options.encryptor - Payload encryptor. Defaults to {@link NoopEncryptor}.
+	 * @param options.prefix - ID prefix applied to generated IDs.
+	 */
 	constructor({
+		pid = undefined,
+		ttl = 5 * 60 * 1000,
+		token = undefined,
+		timeout = undefined,
 		verbose = false,
+		logLevel = undefined,
+		logger = undefined,
 		encryptor = undefined,
-	}: { verbose?: boolean; encryptor?: Encryptor } = {}) {
-		this.verbose = verbose;
-		this.encryptor = encryptor ?? new NoopEncryptor();
+		prefix = undefined,
+	}: {
+		pid?: string;
+		ttl?: number;
+		token?: string;
+		timeout?: number;
+		verbose?: boolean;
+		logLevel?: LogLevel;
+		logger?: Logger;
+		encryptor?: Encryptor;
+		prefix?: string;
+	} = {}) {
+		this.codec = new Codec(encryptor ?? new NoopEncryptor());
+		this.idPrefix = prefix ? `${prefix}:` : "";
+		const resolvedLogLevel: LogLevel = logLevel ?? (verbose ? "debug" : "warn");
+		this.logger = logger ?? new ConsoleLogger(resolvedLogLevel);
+		this.pid = pid;
+
+		this.registry = new Registry();
+		this.dependencies = new Map();
+		this.token = token;
+		this.timeout = timeout;
+		this.ttl = ttl;
 	}
+
+	/**
+	 * Registers a function with Resonate for execution and version control.
+	 */
 	public register<F extends Func>(
 		name: string,
 		func: F,
-		options?: {
-			version?: number;
-		},
+		options?: { version?: number },
 	): void;
 	public register<F extends Func>(
 		func: F,
-		options?: {
-			version?: number;
-		},
+		options?: { version?: number },
 	): void;
 	public register<F extends Func>(
 		nameOrFunc: string | F,
@@ -63,6 +123,16 @@ export class Resonate {
 		this.registry.add(func, name, version);
 	}
 
+	/**
+	 * Registers a named dependency that will be available to all Resonate functions
+	 * via `context.getDependency(name)`.
+	 *
+	 * Use this to inject services, clients, or configuration objects into Resonate
+	 * functions without tight coupling.
+	 *
+	 * @param name - A unique key identifying the dependency.
+	 * @param obj - The dependency value (any object or primitive).
+	 */
 	public onInitialize(
 		fn: (env: Record<string, string>) => Promise<void>,
 	): void {
@@ -94,121 +164,73 @@ export class Resonate {
 					if (request.method !== "POST") {
 						return new Response(
 							JSON.stringify({ error: "Method not allowed. Use POST." }),
-							{
-								status: 405,
-							},
+							{ status: 405 },
 						);
 					}
-					const formattedUrl = new URL(request.url);
-					const url = `${formattedUrl.protocol}//${formattedUrl.host}`;
-
-					const body: any = await request.json();
 
 					if (!request.body) {
 						return new Response(
-							JSON.stringify({
-								error: "Request body missing.",
-							}),
-							{
-								status: 400,
-							},
+							JSON.stringify({ error: "Request body missing." }),
+							{ status: 400 },
 						);
 					}
 
-					if (
-						!body ||
-						!(body.type === "invoke" || body.type === "resume") ||
-						!body.task
-					) {
+					const body: any = await request.json();
+
+					if (!isExecuteMsg(body)) {
 						return new Response(
 							JSON.stringify({
-								error:
-									'Request body must contain "type" and "task" for Resonate invocation.',
+								error: "Request body must be a valid execute message.",
 							}),
-							{
-								status: 400,
-							},
+							{ status: 400 },
 						);
 					}
 
-					const encoder = new JsonEncoder();
+					const resonateServerUrl = body.head.serverUrl;
+
 					const network = new HttpNetwork({
+						url: resonateServerUrl,
+						timeout: this.timeout,
 						headers: {},
-						timeout: 60 * 1000, // 60s
-						url: body.href.base,
-						verbose: this.verbose,
+						token: this.token,
+						logger: this.logger,
 					});
 
-					const resonateInner = new ResonateInner({
-						anycastNoPreference: url,
-						anycastPreference: url,
+					const { protocol, host, pathname } = new URL(request.url);
+					const functionUrl = `${protocol}//${host}${pathname}`;
+
+					const core = new Core({
+						pid: this.pid ?? crypto.randomUUID().replace(/-/g, ""),
+						ttl: this.ttl,
 						clock: new WallClock(),
-						dependencies: this.dependencies,
-						handler: new Handler(network, encoder, this.encryptor),
-						heartbeat: new NoopHeartbeat(),
-						network,
-						pid: `pid-${Math.random().toString(36).substring(7)}`,
+						send: network.send,
+						codec: this.codec,
 						registry: this.registry,
-						ttl: 30 * 1000, // 30s
-						unicast: url,
-						verbose: this.verbose,
+						heartbeat: new NoopHeartbeat(),
+						dependencies: this.dependencies,
+						optsBuilder: new OptionsBuilder({
+							match: (target: string): string => {
+								if (isUrl(target)) return target;
+								return functionUrl;
+							},
+							idPrefix: this.idPrefix,
+						}),
+						logger: this.logger,
 					});
 
-					const task: Task = { kind: "unclaimed", task: body.task };
+					const status = await core.onMessage(body);
 
-					const completion: Promise<Response> = new Promise((resolve) => {
-						resonateInner.process(task, (error, status) => {
-							if (error || !status) {
-								resolve(
-									new Response(
-										JSON.stringify({
-											error: "Task processing failed",
-											details: { error, status },
-										}),
-										{
-											status: 500,
-										},
-									),
-								);
-								return;
-							}
-
-							if (status.kind === "completed") {
-								resolve(
-									new Response(
-										JSON.stringify({
-											status: "completed",
-											result: status.promise.value,
-											requestUrl: url,
-										}),
-										{
-											status: 200,
-										},
-									),
-								);
-								return;
-							} else if (status.kind === "suspended") {
-								resolve(
-									new Response(
-										JSON.stringify({
-											status: "suspended",
-											requestUrl: url,
-										}),
-										{
-											status: 200,
-										},
-									),
-								);
-								return;
-							}
+					if (status.kind === "done") {
+						return new Response(JSON.stringify({ status: "completed" }), {
+							status: 200,
 						});
+					}
+					return new Response(JSON.stringify({ status: "suspended" }), {
+						status: 200,
 					});
-					return completion;
 				} catch (error) {
 					return new Response(
-						JSON.stringify({
-							error: `Handler failed: ${error}`,
-						}),
+						JSON.stringify({ error: `Handler failed: ${error}` }),
 						{ status: 500 },
 					);
 				}
